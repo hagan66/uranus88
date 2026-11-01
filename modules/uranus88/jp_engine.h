@@ -115,6 +115,7 @@ typedef struct {
     float ka1, kd1, kr1, ka2, kd2, kr2;         /* the envelopes' coefficients (no key follow), once per block */
     float trem, vcavel, glide_k, analog, delay_k, spread;
     float lfo[JP_MAXSB + 1];                    /* the LFO at each control step */
+    float vib[JP_MAXSB + 1];                    /* aftertouch's vibrato (semitones) at each control step */
 } jp_ctl_t;
 
 static jp_voice_t jv[JP_NV];
@@ -218,7 +219,7 @@ static void voice_render(jp_voice_t *v, float *L, float *R, uint32_t n)
         v->drift += (v->dvel - v->drift) * (JP_SUBT * 1.25f);
 
         /* pitch */
-        semi = v->pitch + c->tune + c->bend + v->uni + v->drift * c->analog * 0.03f;
+        semi = v->pitch + c->tune + c->bend + v->uni + v->drift * c->analog * 0.03f + c->vib[sb];
         tmp = lfo * (v->fade * c->lfo_vco + c->wheel) + v->e1 * c->env_vco;
         n1 = semi + c->r1 + (c->dest != MD_VCO2 ? tmp : 0.0f);
         n2 = semi + c->r2 + c->fine + v->det_off * c->analog + (c->dest != MD_VCO1 ? tmp : 0.0f);
@@ -553,7 +554,7 @@ static void as_sustain_set(uint8_t on, uint8_t sb)
 #define KQ 64u
 static volatile struct { uint8_t type, a, b; } kq[KQ];
 static volatile uint32_t kq_w, kq_r;
-enum { KE_ON = 1, KE_OFF, KE_SUSTAIN, KE_PANIC, KE_BEND, KE_WHEEL, KE_DRUM };
+enum { KE_ON = 1, KE_OFF, KE_SUSTAIN, KE_PANIC, KE_BEND, KE_WHEEL, KE_DRUM, KE_AFTER };
 
 static void key_push(uint8_t type, uint8_t a, uint8_t b)    /* main loop only */
 {
@@ -577,7 +578,7 @@ static uint8_t ar_list[16], ar_n, ar_phys, ar_note = 255, ar_pos, ar_vel = 100, 
 static uint8_t sq_n[2] = {255, 255}, sq_tie[2], sq_step, sq_was;
 static float ck_pos, ck_len = 1.0f, ck_gate = 1.0f;
 static uint8_t ck_gated, ck_restart;
-static float bend_v, wheel_v;
+static float bend_v, wheel_v, after_v;          /* after_v: aftertouch past its dead zone, 0..1 */
 
 static void ar_add(uint8_t note)
 {
@@ -718,7 +719,7 @@ static void chorus(float *L, float *R, uint32_t n)
 }
 
 /* ------------------------------------------------------------------------------------------------ the block */
-static float lf_ph[2], lf_val[2], lf_rnd[2];
+static float lf_ph[2], lf_val[2], lf_rnd[2], vb_ph[2], vb_amt[2];
 static uint8_t eng_nv = 8;
 static volatile uint8_t jp_nv_now = 8, jp_cpu = 0, jp_active = 0, jp_cores = 1;
 static uint32_t eng_under;
@@ -790,6 +791,12 @@ static void derive(uint32_t L, uint32_t nsb)
         }
         lf_val[L] += (v - lf_val[L]) * 0.35f;   /* a little smoothing: no clicks from the square */
         c->lfo[i] = lf_val[L];
+        /* aftertouch: its own vibrato, a singer's (5.5 Hz, up to 20 cent), eased in and out (~60 ms) */
+        vb_amt[L] += (after_v - vb_amt[L]) * (JP_SUBT / 0.06f);
+        vb_ph[L] += 5.5f * JP_SUBT;
+        if (vb_ph[L] >= 1.0f) vb_ph[L] -= 1.0f;
+        v = 2.0f * vb_ph[L] - 1.0f;             /* a parabolic sine */
+        c->vib[i] = vb_amt[L] * 0.2f * 4.0f * v * (1.0f - jp_absf(v));
     }
 }
 
@@ -884,9 +891,11 @@ static uint32_t eng_prologue(uint32_t n)
         case KE_SUSTAIN: as_sustain_set(a, 0); break;
         case KE_BEND: bend_v = ((float)((int32_t)a << 7 | b) - 8192.0f) * (1.0f / 8192.0f); break;
         case KE_WHEEL: wheel_v = (float)a * (1.0f / 127.0f); break;
+        case KE_AFTER: after_v = a > 72u ? (float)(a - 72u) * (1.0f / 55.0f) : 0.0f; break;   /* only a hard press */
         case KE_DRUM: dr_trigger(a, (float)b * (1.0f / 127.0f), 0); break;
         case KE_PANIC:
             as_sustain = 0;
+            after_v = 0.0f;
             as_all_off(0);
             ar_n = ar_phys = 0; ar_note = 255; sq_n[0] = sq_n[1] = 255;
             break;
