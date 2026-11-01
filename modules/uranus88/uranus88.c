@@ -361,7 +361,7 @@ static void knob(const jp_knob_t *k, int32_t arg)
 
 static void ui(uint32_t ev, int32_t arg)
 {
-    uint32_t id = HB_EV_ID(ev);
+    uint32_t id = HB_EV_ID(ev), k;
     touched = H->ms();
     switch (HB_EV_KIND(ev)) {
     case HB_EV_ENC:
@@ -392,12 +392,14 @@ static void ui(uint32_t ev, int32_t arg)
             key_push(KE_OFF, key_note[id], 0);
             H->midi_send(0x80u, key_note[id], 0);
             key_note[id] = 0;
+            for (k = 0; k < 27u && !key_note[k]; k++) {}
+            if (k == 27u) { press_max = 0; key_push(KE_AFTER, 0, 0); }   /* all keys up: no pressure is left */
         }
         break;
-    case HB_EV_KEY_PRESSURE: {                  /* aftertouch: vibrato, as the mod wheel */
+    case HB_EV_KEY_PRESSURE: {                  /* aftertouch: a hard press, a gentle vibrato of its own */
         uint8_t m = (uint8_t)(arg > 127 ? 127 : arg < 0 ? 0 : arg);
         press_max = m;
-        key_push(KE_WHEEL, m > cc1 ? m : cc1, 0);
+        key_push(KE_AFTER, m, 0);
         break;
     }
     default: break;
@@ -419,7 +421,7 @@ static void midi(uint32_t st, uint32_t d1, uint32_t d2)
     case 0x80u: key_push(KE_OFF, (uint8_t)d1, 0); break;
     case 0xE0u: key_push(KE_BEND, (uint8_t)d2, (uint8_t)d1); break;
     case 0xC0u: patch_load(d1); break;
-    case 0xD0u: key_push(KE_WHEEL, (uint8_t)(d1 > cc1 ? d1 : cc1), 0); break;
+    case 0xD0u: key_push(KE_AFTER, (uint8_t)d1, 0); break;
     case 0xB0u:
         switch (d1) {
         case 1: cc1 = (uint8_t)d2; key_push(KE_WHEEL, (uint8_t)d2, 0); break;
@@ -822,6 +824,7 @@ static void release(void)
     LA[0].nstack = LA[1].nstack = 0;
     jp_seq_play = jp_seq_rec = 0;
     for (i = 0; i < 27u; i++) key_note[i] = 0;
+    after_v = 0.0f;
 }
 
 HB_DESC = {HB_ABI, "URANUS 88", init, release, note, cc, render, ui, draw, 0, 0, HB_F_SCREEN | HB_F_PANEL, midi};
