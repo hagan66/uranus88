@@ -1,0 +1,30 @@
+# URANUS 88: built on GitHub by the FM-1 Firmware Hub's shared workflow (zvenson/fm1-build), on fm1-dock at a fixed
+# commit, as a solo app (fm1-dock with this one module). Every push builds build/uranus88*.fwsc (the run's
+# "packages" artifact); a tag vX.Y also publishes it as that tag's release.
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+jobs:
+  build:
+    uses: zvenson/fm1-build/.github/workflows/build.yml@v1
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      build: |
+        set -e
+        git clone https://github.com/joakimeriksson/fm1-dock.git fm1-dock
+        git -C fm1-dock checkout 497449b45f89a3124fca2ed47f1040aae2c50ac8
+        if [ "$GITHUB_REF_TYPE" = tag ]; then set -- --release "${GITHUB_REF_NAME#v}"; else set --; fi
+        (cd fm1-dock && ./build.sh --modules "$GITHUB_WORKSPACE/modules/uranus88" --name uranus88 \
+            --app-name "URANUS 88" --identity FM-1_988 "$@")
+        (cd fm1-dock && python3 tools/hbmod.py "$GITHUB_WORKSPACE/modules/uranus88") || true
+        mkdir -p build
+        cp fm1-dock/build/uranus88*.fwsc build/
+        cp fm1-dock/build/modules/uranus88.dock build/ || true
+        ls -l build
+      packages: build/uranus88*.fwsc
