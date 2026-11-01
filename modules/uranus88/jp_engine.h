@@ -15,8 +15,8 @@
 #include "jp_params.h"
 
 #define JP_SR      44100.0f
-#define JP_SUB     16u                          /* frames per control step */
-#define JP_SUBT    (16.0f / 44100.0f)           /* its length in seconds */
+#define JP_SUB     32u                          /* frames per control step (0.7 ms) */
+#define JP_SUBT    (32.0f / 44100.0f)           /* its length in seconds */
 #define JP_NV      8u
 #define JP_MAXN    512u                         /* the longest render() block handled in one go */
 #define JP_MAXSB   (JP_MAXN / JP_SUB)
@@ -112,6 +112,7 @@ typedef struct {
     float m1, m2, hp_k, level;
     float cut, res_k, comp, envmod, vcflfo, keyflw, vcfvel;
     float a1t, d1t, s1, r1t, a2t, d2t, s2, r2t, envkf;
+    float ka1, kd1, kr1, ka2, kd2, kr2;         /* the envelopes' coefficients (no key follow), once per block */
     float trem, vcavel, glide_k, analog, delay_k, spread;
     float lfo[JP_MAXSB + 1];                    /* the LFO at each control step */
 } jp_ctl_t;
@@ -195,24 +196,29 @@ static void voice_render(jp_voice_t *v, float *L, float *R, uint32_t n)
         lfo = c->lfo[sb];
 
         /* envelopes (key follow shortens them up the keyboard) */
-        kf = c->envkf > 0.0f ? jp_exp2(-c->envkf * ((float)v->note - 60.0f) * (1.0f / 24.0f)) : 1.0f;
-        if (v->st1 == 1) { a1 = env_k(c->a1t * kf, 1.466f); v->e1 += (1.3f - v->e1) * a1; if (v->e1 >= 1.0f) { v->e1 = 1.0f; v->st1 = 2; } }
-        else if (v->st1 == 2) { d1 = env_k(c->d1t * kf, 4.6f); v->e1 += (c->s1 - v->e1) * d1; }
-        else if (v->st1 == 4) { r1 = env_k(c->r1t * kf, 4.6f); v->e1 -= v->e1 * r1; if (v->e1 < 0.0003f) { v->e1 = 0.0f; v->st1 = 0; } }
-        if (v->st2 == 1) { a2 = env_k(c->a2t * kf, 1.466f); v->e2 += (1.3f - v->e2) * a2; if (v->e2 >= 1.0f) { v->e2 = 1.0f; v->st2 = 2; } }
-        else if (v->st2 == 2) { d2 = env_k(c->d2t * kf, 4.6f); v->e2 += (c->s2 - v->e2) * d2; }
-        else if (v->st2 == 4) { r2 = env_k(c->r2t * kf, 4.6f); v->e2 -= v->e2 * r2; if (v->e2 < 0.0003f) { v->e2 = 0.0f; v->st2 = 0; } }
+        if (c->envkf > 0.0f) {                  /* key follow: this note's own coefficients */
+            kf = jp_exp2(-c->envkf * ((float)v->note - 60.0f) * (1.0f / 24.0f));
+            a1 = env_k(c->a1t * kf, 1.466f); d1 = env_k(c->d1t * kf, 4.6f); r1 = env_k(c->r1t * kf, 4.6f);
+            a2 = env_k(c->a2t * kf, 1.466f); d2 = env_k(c->d2t * kf, 4.6f); r2 = env_k(c->r2t * kf, 4.6f);
+        } else {
+            a1 = c->ka1; d1 = c->kd1; r1 = c->kr1; a2 = c->ka2; d2 = c->kd2; r2 = c->kr2;
+        }
+        if (v->st1 == 1) { v->e1 += (1.3f - v->e1) * a1; if (v->e1 >= 1.0f) { v->e1 = 1.0f; v->st1 = 2; } }
+        else if (v->st1 == 2) { v->e1 += (c->s1 - v->e1) * d1; }
+        else if (v->st1 == 4) { v->e1 -= v->e1 * r1; if (v->e1 < 0.0003f) { v->e1 = 0.0f; v->st1 = 0; } }
+        if (v->st2 == 1) { v->e2 += (1.3f - v->e2) * a2; if (v->e2 >= 1.0f) { v->e2 = 1.0f; v->st2 = 2; } }
+        else if (v->st2 == 2) { v->e2 += (c->s2 - v->e2) * d2; }
+        else if (v->st2 == 4) { v->e2 -= v->e2 * r2; if (v->e2 < 0.0003f) { v->e2 = 0.0f; v->st2 = 0; } }
 
         /* LFO delay, glide, drift */
         if (v->fade < 1.0f) { v->fade += c->delay_k; if (v->fade > 1.0f) v->fade = 1.0f; }
         v->pitch += (v->target - v->pitch) * c->glide_k;
-        v->dvel += jp_randf() * 0.0008f - v->dvel * 0.02f;
-        v->drift += v->dvel - v->drift * 0.004f;
-        if (v->drift > 1.0f) v->drift = 1.0f;
-        if (v->drift < -1.0f) v->drift = -1.0f;
+        /* slow drift: a new random target about every 2 s, glided to over ~0.8 s (rate-independent) */
+        if (jp_randf() < JP_SUBT * 1.0f - 1.0f) v->dvel = jp_randf();
+        v->drift += (v->dvel - v->drift) * (JP_SUBT * 1.25f);
 
         /* pitch */
-        semi = v->pitch + c->tune + c->bend + v->uni + v->drift * c->analog * 0.12f;
+        semi = v->pitch + c->tune + c->bend + v->uni + v->drift * c->analog * 0.03f;
         tmp = lfo * (v->fade * c->lfo_vco + c->wheel) + v->e1 * c->env_vco;
         n1 = semi + c->r1 + (c->dest != MD_VCO2 ? tmp : 0.0f);
         n2 = semi + c->r2 + c->fine + v->det_off * c->analog + (c->dest != MD_VCO1 ? tmp : 0.0f);
@@ -232,8 +238,8 @@ static void voice_render(jp_voice_t *v, float *L, float *R, uint32_t n)
         if (fc > 0.42f * JP_SR) fc = 0.42f * JP_SR;
         if (fc < 8.0f) fc = 8.0f;
         g = jp_tan(3.14159265f * fc / JP_SR);
-        G = g / (1.0f + g);
         b = 1.0f / (1.0f + g);
+        G = g * b;
         G2 = G * G; G3 = G2 * G; G4 = G3 * G;
         k = c->res_k;
         inv = 1.0f / (1.0f + k * G4);
@@ -284,8 +290,10 @@ static void voice_render(jp_voice_t *v, float *L, float *R, uint32_t n)
             default: w = 2.0f * p2 - 1.0f; o2 = 4.0f * w * (1.0f - jp_absf(w)); break;
             }
             x = o1 * c->m1 + o2 * c->m2;
-            hpz += (x - hpz) * c->hp_k;         /* the HPF: what is left above its corner */
-            x -= hpz;
+            if (c->hp_k > 0.0f) {               /* the HPF: what is left above its corner */
+                hpz += (x - hpz) * c->hp_k;
+                x -= hpz;
+            }
 
             /* the ladder: solved for its feedback (zero delay), the input soft clipped */
             S = b * (G3 * s1 + G2 * s2 + G * s3 + s4);
@@ -758,6 +766,8 @@ static void derive(uint32_t L, uint32_t nsb)
     c->s1 = (float)p[P_S1] * (1.0f / 127.0f);
     c->s2 = (float)p[P_S2] * (1.0f / 127.0f);
     c->envkf = (float)p[P_ENVKF] * (1.0f / 127.0f);
+    c->ka1 = env_k(c->a1t, 1.466f); c->kd1 = env_k(c->d1t, 4.6f); c->kr1 = env_k(c->r1t, 4.6f);
+    c->ka2 = env_k(c->a2t, 1.466f); c->kd2 = env_k(c->d2t, 4.6f); c->kr2 = env_k(c->r2t, 4.6f);
     c->trem = (float)p[P_TREM] * (0.9f / 127.0f);
     c->vcavel = (float)p[P_VCAVEL] * (1.0f / 127.0f);
     c->glide_k = p[P_PORTA] ? env_k(0.004f * jp_exp2((float)p[P_PORTA] * (9.5f / 127.0f)), 2.3f) : 1.0f;
@@ -800,7 +810,7 @@ static void eng_init(void)
         jv[i].nz = 0x1234567u * (i + 1u);
         jv[i].cutoff_off = jp_randf() * 0.18f;
         jv[i].det_off = jp_randf() * 0.07f;
-        jv[i].drift = jp_randf() * 0.5f;
+        jv[i].drift = jv[i].dvel = jp_randf() * 0.5f;
         jv[i].pan_l = jv[i].pan_r = 1.0f;
     }
 }
