@@ -733,7 +733,7 @@ static void derive(uint32_t L, uint32_t nsb)
     c->tune = ((float)jp_g[G_TUNE] - 64.0f) * (1.0f / 64.0f) * 0.5f;
     c->bend = bend_v * (float)p[P_BEND];
     c->wheel = wheel_v * (float)p[P_WHEEL] * (1.5f / 127.0f);
-    x = (float)p[P_LFOVCO] * (1.0f / 127.0f); c->lfo_vco = x * x * 12.0f;
+    x = (float)p[P_LFOVCO] * (1.0f / 127.0f); c->lfo_vco = x * x * x * 12.0f;   /* fine at the bottom: 26 ~ 10 cent */
     x = (float)p[P_ENVVCO] * (1.0f / 127.0f); c->env_vco = x * x * 36.0f;
     x = (float)p[P_XMOD] * (1.0f / 127.0f); c->xmod = x * x * 4.0f;
     c->w1 = p[P_V1WAVE] & 3u; c->w2 = p[P_V2WAVE] & 3u;
