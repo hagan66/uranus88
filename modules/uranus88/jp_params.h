@@ -28,6 +28,7 @@ enum {
     G_PATTERN, G_PLAYMODE, G_DRLEVEL, G_ACCENT,  /* the drum machine */
     G_DRINST,
     G_KEYMODE, G_LOWER, G_SPLIT, G_LOWOCT,       /* WHOLE / SPLIT / DUAL, the lower patch, the split point */
+    G_SCREEN, G_BTNLT, G_KEYLT, G_DIM,           /* LIGHTS: the screen's brightness, the buttons' glow, the keys' LEDs, dim when idle */
     NG
 };
 
